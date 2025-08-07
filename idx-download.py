@@ -2,7 +2,6 @@ import os
 import time
 import logging
 from datetime import datetime, timedelta
-
 import cloudscraper
 import pandas as pd
 
@@ -39,31 +38,59 @@ def json_to_excel(data, filepath):
     df = pd.DataFrame(data)
     df.to_excel(filepath, index=False)
 
+def is_weekday(date_obj):
+    """
+    Check if date is Monday-Friday (potential trading day)
+    weekday() returns 0=Monday, 6=Sunday
+    """
+    return date_obj.weekday() < 5  # 0-4 are Mon-Fri
+
 if __name__ == "__main__":
-    days_back = int(input("How many days back? "))
-    today     = datetime.today()
-
-    for i in range(days_back):
-        d        = today - timedelta(days=i)
-        date_str = d.strftime("%Y%m%d")
-
+    days_needed = int(input("How many trading days back? "))
+    
+    print(f"Collecting {days_needed} trading days of data...")
+    
+    current_date = datetime.today()
+    trading_days_collected = 0
+    days_checked = 0
+    max_days_to_check = days_needed * 3  # Safety limit
+    
+    while trading_days_collected < days_needed and days_checked < max_days_to_check:
+        date_str = current_date.strftime("%Y%m%d")
+        days_checked += 1
+        
+        # Skip weekends (Saturday/Sunday)
+        if not is_weekday(current_date):
+            print(f"⏩ {date_str}: Weekend, skipping")
+            current_date -= timedelta(days=1)
+            continue
+        
         try:
-            js   = fetch_json_for_date(date_str)
+            js = fetch_json_for_date(date_str)
             data = js.get("data") or []
-
-            # skip if no data
+            
+            # If no data available, it's likely a holiday
             if not data:
-                print(f"✘ {date_str}: no data available, skipping export")
+                print(f"⏩ {date_str}: No data (holiday), skipping")
+                current_date -= timedelta(days=1)
                 continue
-
-            # build the output path in the subfolder
+            
+            # Save the trading data
             filename = f"idx_summary_{date_str}.xlsx"
             filepath = os.path.join(OUTPUT_DIR, filename)
-
             json_to_excel(data, filepath)
-            print(f"✔ {date_str} saved → {filepath}")
-
+            
+            trading_days_collected += 1
+            print(f"✔ {date_str}: Saved ({trading_days_collected}/{days_needed})")
+            
         except Exception as e:
-            print(f"✘ {date_str} error:", e)
-
+            print(f"✘ {date_str}: Error - {e}")
+        
+        # Move to previous day
+        current_date -= timedelta(days=1)
         time.sleep(1)
+    
+    print(f"\nCompleted! Collected {trading_days_collected} trading days.")
+    if trading_days_collected < days_needed:
+        print(f"Note: Only found {trading_days_collected} out of {days_needed} requested days.")
+    print(f"Files saved in: {OUTPUT_DIR}")
