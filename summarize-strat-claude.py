@@ -3,6 +3,7 @@ import numpy as np
 import os
 from datetime import datetime
 import warnings
+import xlsxwriter
 warnings.filterwarnings('ignore')
 
 class IDXTradingSignalAnalyzer:
@@ -117,6 +118,7 @@ class IDXTradingSignalAnalyzer:
                 # 2. Volume Analysis (30% weight)
                 # Calculate average volume if we have historical data
                 avg_volume = None
+                volume_ratio = 0
                 if df_historical is not None:
                     hist_stock = df_historical[df_historical['StockCode'] == stock['StockCode']]
                     if len(hist_stock) > 1:
@@ -172,13 +174,21 @@ class IDXTradingSignalAnalyzer:
                 else:
                     signal = 'HOLD'
                 
+                # Calculate prediction metrics
+                predictions = self.calculate_predictions(signal, score, change_pct, daily_range, close_position, stock['Close'])
+                
                 signal_data.update({
                     'Signal': signal,
                     'Score': round(score, 2),
                     'Daily_Range_Pct': round(daily_range, 2),
                     'Close_Position': round(close_position, 2),
-                    'Volume_Ratio': round(volume_ratio, 2) if avg_volume else 'N/A',
-                    'Reasons': '; '.join(reasons) if reasons else 'No significant signals'
+                    'Volume_Ratio': round(volume_ratio, 2) if avg_volume else 0,
+                    'Reasons': '; '.join(reasons) if reasons else 'No significant signals',
+                    'Predicted_Gain_Pct': predictions['predicted_gain'],
+                    'Target_Price': predictions['target_price'],
+                    'Risk_Level': predictions['risk_level'],
+                    'Confidence_Score': predictions['confidence'],
+                    'Time_Horizon': predictions['time_horizon']
                 })
                 
                 signals.append(signal_data)
@@ -188,6 +198,354 @@ class IDXTradingSignalAnalyzer:
                 continue
         
         return pd.DataFrame(signals)
+    
+    def calculate_predictions(self, signal, score, change_pct, daily_range, close_position, current_price):
+        """Calculate prediction metrics based on signal analysis"""
+        predictions = {
+            'predicted_gain': 0,
+            'target_price': current_price,
+            'risk_level': 'MEDIUM',
+            'confidence': 50,
+            'time_horizon': '3-5 days'
+        }
+        
+        # Base prediction on signal strength and score
+        base_gain = 0
+        confidence_base = 50
+        
+        if signal == 'STRONG BUY':
+            base_gain = 8 + (score * 0.5)  # 8-12% expected gain
+            confidence_base = 80
+            predictions['time_horizon'] = '2-4 days'
+        elif signal == 'BUY':
+            base_gain = 4 + (score * 0.8)  # 4-8% expected gain
+            confidence_base = 65
+            predictions['time_horizon'] = '3-5 days'
+        elif signal == 'STRONG SELL':
+            base_gain = -8 + (score * 0.5)  # -8 to -12% expected loss
+            confidence_base = 75
+            predictions['time_horizon'] = '2-4 days'
+        elif signal == 'SELL':
+            base_gain = -4 + (score * 0.8)  # -4 to -8% expected loss
+            confidence_base = 60
+            predictions['time_horizon'] = '3-5 days'
+        else:  # HOLD
+            base_gain = -1 + (score * 0.3)  # -1 to +1% neutral movement
+            confidence_base = 45
+            predictions['time_horizon'] = '5-7 days'
+        
+        # Adjust prediction based on momentum (recent change)
+        momentum_factor = 1.0
+        if abs(change_pct) >= 5:  # Strong momentum
+            momentum_factor = 1.2 if change_pct > 0 else 1.3
+            confidence_base += 10
+        elif abs(change_pct) >= 2:  # Moderate momentum
+            momentum_factor = 1.1 if change_pct > 0 else 1.15
+            confidence_base += 5
+        
+        # Adjust based on volatility (daily range)
+        volatility_factor = 1.0
+        if daily_range >= 8:  # High volatility
+            volatility_factor = 1.3
+            confidence_base -= 10
+            predictions['risk_level'] = 'HIGH'
+        elif daily_range >= 5:  # Moderate volatility
+            volatility_factor = 1.15
+            predictions['risk_level'] = 'MEDIUM'
+        elif daily_range < 2:  # Low volatility
+            volatility_factor = 0.8
+            predictions['risk_level'] = 'LOW'
+            confidence_base += 5
+        
+        # Adjust based on close position (where stock closed in daily range)
+        position_factor = 1.0
+        if signal in ['BUY', 'STRONG BUY']:
+            if close_position >= 0.8:  # Closed near high - bullish continuation
+                position_factor = 1.1
+                confidence_base += 5
+            elif close_position <= 0.3:  # Closed near low - might reverse
+                position_factor = 0.9
+                confidence_base -= 5
+        elif signal in ['SELL', 'STRONG SELL']:
+            if close_position <= 0.2:  # Closed near low - bearish continuation
+                position_factor = 1.1
+                confidence_base += 5
+            elif close_position >= 0.7:  # Closed near high - might reverse
+                position_factor = 0.9
+                confidence_base -= 5
+        
+        # Calculate final predicted gain
+        final_gain = base_gain * momentum_factor * volatility_factor * position_factor
+        
+        # Apply market constraints (Indonesian stocks often limited by daily limits)
+        final_gain = max(min(final_gain, 20), -20)  # Cap at +/-20%
+        
+        # Calculate target price
+        target_price = current_price * (1 + final_gain / 100)
+        
+        # Calculate confidence score
+        confidence = min(max(confidence_base, 20), 95)  # Between 20-95%
+        
+        # Determine risk level based on multiple factors
+        risk_score = 0
+        if abs(final_gain) >= 10:
+            risk_score += 2
+        if daily_range >= 8:
+            risk_score += 2
+        if confidence < 60:
+            risk_score += 1
+        if abs(change_pct) >= 5:
+            risk_score += 1
+        
+        if risk_score >= 4:
+            risk_level = 'VERY HIGH'
+        elif risk_score >= 3:
+            risk_level = 'HIGH'
+        elif risk_score >= 2:
+            risk_level = 'MEDIUM'
+        else:
+            risk_level = 'LOW'
+        
+        predictions.update({
+            'predicted_gain': round(final_gain, 2),
+            'target_price': round(target_price, 0),
+            'risk_level': risk_level,
+            'confidence': round(confidence, 0),
+        })
+        
+        return predictions
+    
+    def save_formatted_excel(self, signals_df, output_file):
+        """Save DataFrame to Excel with proper formatting"""
+        try:
+            # Create a workbook and worksheet
+            workbook = xlsxwriter.Workbook(output_file)
+            worksheet = workbook.add_worksheet('Trading Signals')
+            
+            # Define formats
+            formats = {
+                'header': workbook.add_format({
+                    'bold': True,
+                    'font_size': 12,
+                    'bg_color': '#4472C4',
+                    'font_color': 'white',
+                    'align': 'center',
+                    'valign': 'vcenter',
+                    'border': 1,
+                    'text_wrap': True
+                }),
+                'currency': workbook.add_format({
+                    'num_format': '"Rp"#,##0',
+                    'align': 'right',
+                    'border': 1
+                }),
+                'percentage': workbook.add_format({
+                    'num_format': '0.00%',
+                    'align': 'center',
+                    'border': 1
+                }),
+                'number': workbook.add_format({
+                    'num_format': '#,##0',
+                    'align': 'right',
+                    'border': 1
+                }),
+                'decimal': workbook.add_format({
+                    'num_format': '0.00',
+                    'align': 'center',
+                    'border': 1
+                }),
+                'text': workbook.add_format({
+                    'align': 'left',
+                    'border': 1,
+                    'text_wrap': True
+                }),
+                'center_text': workbook.add_format({
+                    'align': 'center',
+                    'border': 1
+                }),
+                'strong_buy': workbook.add_format({
+                    'bg_color': '#00B050',
+                    'font_color': 'white',
+                    'bold': True,
+                    'align': 'center',
+                    'border': 1
+                }),
+                'buy': workbook.add_format({
+                    'bg_color': '#92D050',
+                    'font_color': 'black',
+                    'bold': True,
+                    'align': 'center',
+                    'border': 1
+                }),
+                'hold': workbook.add_format({
+                    'bg_color': '#FFC000',
+                    'font_color': 'black',
+                    'bold': True,
+                    'align': 'center',
+                    'border': 1
+                }),
+                'sell': workbook.add_format({
+                    'bg_color': '#FF6600',
+                    'font_color': 'white',
+                    'bold': True,
+                    'align': 'center',
+                    'border': 1
+                }),
+                'strong_sell': workbook.add_format({
+                    'bg_color': '#C00000',
+                    'font_color': 'white',
+                    'bold': True,
+                    'align': 'center',
+                    'border': 1
+                }),
+                'risk_low': workbook.add_format({
+                    'bg_color': '#D5E8D4',
+                    'font_color': 'black',
+                    'align': 'center',
+                    'border': 1
+                }),
+                'risk_medium': workbook.add_format({
+                    'bg_color': '#FFF2CC',
+                    'font_color': 'black',
+                    'align': 'center',
+                    'border': 1
+                }),
+                'risk_high': workbook.add_format({
+                    'bg_color': '#F8CECC',
+                    'font_color': 'black',
+                    'align': 'center',
+                    'border': 1
+                }),
+                'risk_very_high': workbook.add_format({
+                    'bg_color': '#C00000',
+                    'font_color': 'white',
+                    'bold': True,
+                    'align': 'center',
+                    'border': 1
+                }),
+                'positive_percentage': workbook.add_format({
+                    'num_format': '0.00%',
+                    'align': 'center',
+                    'border': 1,
+                    'font_color': '#008000'
+                }),
+                'negative_percentage': workbook.add_format({
+                    'num_format': '0.00%',
+                    'align': 'center',
+                    'border': 1,
+                    'font_color': '#C00000'
+                })
+            }
+            
+            # Column definitions with formatting
+            columns = [
+                ('StockCode', 'Stock Code', 12, 'center_text'),
+                ('StockName', 'Stock Name', 25, 'text'),
+                ('Signal', 'Signal', 15, 'signal'),  # Special handling for signal colors
+                ('Score', 'Score', 10, 'decimal'),
+                ('Close', 'Close Price', 15, 'currency'),
+                ('Change', 'Change', 12, 'currency'),
+                ('Change_Pct', 'Change %', 12, 'percentage'),
+                ('Predicted_Gain_Pct', 'Predicted Gain %', 16, 'percentage'),
+                ('Target_Price', 'Target Price', 15, 'currency'),
+                ('Confidence_Score', 'Confidence', 12, 'decimal'),
+                ('Risk_Level', 'Risk Level', 12, 'risk_level'),  # Special handling for risk colors
+                ('Time_Horizon', 'Time Frame', 12, 'center_text'),
+                ('Volume', 'Volume', 15, 'number'),
+                ('Value', 'Trading Value', 20, 'currency'),
+                ('Daily_Range_Pct', 'Daily Range %', 15, 'percentage'),
+                ('Close_Position', 'Close Position', 15, 'decimal'),
+                ('Volume_Ratio', 'Volume Ratio', 15, 'decimal'),
+                ('Reasons', 'Analysis Reasons', 40, 'text')
+            ]
+            
+            # Write headers
+            for col_idx, (col_name, header_text, width, format_type) in enumerate(columns):
+                worksheet.write(0, col_idx, header_text, formats['header'])
+                worksheet.set_column(col_idx, col_idx, width)
+            
+            # Write data rows
+            for row_idx, (_, row_data) in enumerate(signals_df.iterrows(), start=1):
+                for col_idx, (col_name, header_text, width, format_type) in enumerate(columns):
+                    value = row_data[col_name]
+                    
+                    # Handle special formatting for Signal column
+                    if col_name == 'Signal':
+                        if value == 'STRONG BUY':
+                            worksheet.write(row_idx, col_idx, value, formats['strong_buy'])
+                        elif value == 'BUY':
+                            worksheet.write(row_idx, col_idx, value, formats['buy'])
+                        elif value == 'HOLD':
+                            worksheet.write(row_idx, col_idx, value, formats['hold'])
+                        elif value == 'SELL':
+                            worksheet.write(row_idx, col_idx, value, formats['sell'])
+                        elif value == 'STRONG SELL':
+                            worksheet.write(row_idx, col_idx, value, formats['strong_sell'])
+                    # Handle Risk Level formatting
+                    elif col_name == 'Risk_Level':
+                        if value == 'LOW':
+                            worksheet.write(row_idx, col_idx, value, formats['risk_low'])
+                        elif value == 'MEDIUM':
+                            worksheet.write(row_idx, col_idx, value, formats['risk_medium'])
+                        elif value == 'HIGH':
+                            worksheet.write(row_idx, col_idx, value, formats['risk_high'])
+                        elif value == 'VERY HIGH':
+                            worksheet.write(row_idx, col_idx, value, formats['risk_very_high'])
+                    # Handle Predicted Gain with color coding
+                    elif col_name == 'Predicted_Gain_Pct':
+                        if value >= 0:
+                            worksheet.write(row_idx, col_idx, value / 100, formats['positive_percentage'])
+                        else:
+                            worksheet.write(row_idx, col_idx, value / 100, formats['negative_percentage'])
+                    # Handle percentage conversion for Change_Pct and Daily_Range_Pct
+                    elif col_name in ['Change_Pct', 'Daily_Range_Pct']:
+                        worksheet.write(row_idx, col_idx, value / 100, formats[format_type])
+                    # Handle Volume_Ratio display (show as N/A if 0)
+                    elif col_name == 'Volume_Ratio':
+                        if value == 0:
+                            worksheet.write(row_idx, col_idx, 'N/A', formats['center_text'])
+                        else:
+                            worksheet.write(row_idx, col_idx, value, formats[format_type])
+                    else:
+                        worksheet.write(row_idx, col_idx, value, formats[format_type])
+            
+            # Add autofilter
+            worksheet.autofilter(0, 0, len(signals_df), len(columns) - 1)
+            
+            # Freeze the header row
+            worksheet.freeze_panes(1, 0)
+            
+            # Add summary information in a separate area
+            summary_start_row = len(signals_df) + 3
+            
+            # Summary header
+            worksheet.merge_range(summary_start_row, 0, summary_start_row, 2, 
+                                'SIGNAL SUMMARY', formats['header'])
+            
+            # Signal counts
+            signal_counts = signals_df['Signal'].value_counts()
+            summary_row = summary_start_row + 2
+            
+            for signal, count in signal_counts.items():
+                percentage = (count / len(signals_df) * 100)
+                worksheet.write(summary_row, 0, signal, formats['center_text'])
+                worksheet.write(summary_row, 1, count, formats['number'])
+                worksheet.write(summary_row, 2, f"{percentage:.1f}%", formats['center_text'])
+                summary_row += 1
+            
+            workbook.close()
+            print(f"✅ Formatted Excel file saved: {output_file}")
+            
+        except Exception as e:
+            print(f"❌ Error creating formatted Excel file: {e}")
+            # Fallback to regular pandas Excel export
+            export_df = signals_df[[
+                'StockCode', 'StockName', 'Signal', 'Score', 'Close', 'Change', 'Change_Pct',
+                'Predicted_Gain_Pct', 'Target_Price', 'Confidence_Score', 'Risk_Level', 'Time_Horizon',
+                'Volume', 'Value', 'Daily_Range_Pct', 'Close_Position', 'Volume_Ratio', 'Reasons'
+            ]].copy()
+            export_df.to_excel(output_file, index=False)
+            print(f"⚠️ Saved basic Excel file as fallback: {output_file}")
     
     def run_analysis(self, days_to_analyze=5):
         """Run the complete analysis"""
@@ -217,17 +575,19 @@ class IDXTradingSignalAnalyzer:
         signals_df['Signal_Order'] = signals_df['Signal'].map({sig: i for i, sig in enumerate(signal_order)})
         signals_df = signals_df.sort_values(['Signal_Order', 'Score'], ascending=[True, False])
         
-        # Save results
+        # Save formatted results
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = os.path.join(self.signals_folder, f"idx_trading_signals_{timestamp}.xlsx")
         
         # Prepare final dataframe for export
         export_df = signals_df[[
             'StockCode', 'StockName', 'Signal', 'Score', 'Close', 'Change', 'Change_Pct',
+            'Predicted_Gain_Pct', 'Target_Price', 'Confidence_Score', 'Risk_Level', 'Time_Horizon',
             'Volume', 'Value', 'Daily_Range_Pct', 'Close_Position', 'Volume_Ratio', 'Reasons'
         ]].copy()
         
-        export_df.to_excel(output_file, index=False)
+        # Save with formatting
+        self.save_formatted_excel(export_df, output_file)
         
         # Display results
         print("\n" + "="*120)
@@ -239,9 +599,15 @@ class IDXTradingSignalAnalyzer:
             if len(stocks) > 0:
                 print(f"\n🔸 {signal_type} ({len(stocks)} stocks):")
                 for _, stock in stocks.head(10).iterrows():  # Show top 10 per category
-                    print(f"  • {stock['StockCode']} ({stock['StockName'][:30]}): "
-                          f"Score {stock['Score']}, Price {stock['Close']:,}, "
-                          f"Change {stock['Change_Pct']:+.1f}%")
+                    predicted_gain = stock.get('Predicted_Gain_Pct', 0)
+                    target_price = stock.get('Target_Price', stock['Close'])
+                    confidence = stock.get('Confidence_Score', 0)
+                    risk = stock.get('Risk_Level', 'N/A')
+                    
+                    print(f"  • {stock['StockCode']} ({stock['StockName'][:25]}): "
+                          f"Score {stock['Score']}, Current: Rp{stock['Close']:,.0f}, "
+                          f"Target: Rp{target_price:,.0f} ({predicted_gain:+.1f}%), "
+                          f"Risk: {risk}, Confidence: {confidence}%")
                 
                 if len(stocks) > 10:
                     print(f"    ... and {len(stocks) - 10} more")
@@ -253,7 +619,7 @@ class IDXTradingSignalAnalyzer:
             percentage = (count / len(signals_df) * 100)
             print(f"   {signal}: {count} stocks ({percentage:.1f}%)")
         
-        print(f"\n💾 Detailed report saved: {output_file}")
+        print(f"\n💾 Detailed formatted report saved: {output_file}")
         
         return signals_df
     
@@ -268,6 +634,14 @@ class IDXTradingSignalAnalyzer:
 if __name__ == "__main__":
     print("🚀 IDX Daily Trading Signal Analyzer")
     print("="*50)
+    
+    # Check if xlsxwriter is available
+    try:
+        import xlsxwriter
+        print("✅ XlsxWriter library detected - Excel formatting will be applied")
+    except ImportError:
+        print("⚠️  XlsxWriter library not found. Install it with: pip install xlsxwriter")
+        print("    Fallback: Basic Excel export will be used")
     
     analyzer = IDXTradingSignalAnalyzer()
     
@@ -287,11 +661,18 @@ if __name__ == "__main__":
         top_buys = analyzer.get_top_picks(results, 'BUY', 5)
         if top_buys is not None and len(top_buys) > 0:
             for _, stock in top_buys.iterrows():
-                print(f"  🔥 {stock['StockCode']} - Score: {stock['Score']}, "
-                      f"Change: {stock['Change_Pct']:+.1f}%, Price: {stock['Close']:,}")
+                predicted_gain = stock.get('Predicted_Gain_Pct', 0)
+                target_price = stock.get('Target_Price', stock['Close'])
+                confidence = stock.get('Confidence_Score', 0)
+                risk = stock.get('Risk_Level', 'N/A')
+                time_frame = stock.get('Time_Horizon', 'N/A')
+                
+                print(f"  🔥 {stock['StockCode']} - Current: Rp{stock['Close']:,.0f}, "
+                      f"Target: Rp{target_price:,.0f} ({predicted_gain:+.1f}%)")
+                print(f"     Risk: {risk}, Confidence: {confidence}%, Timeframe: {time_frame}")
         else:
             print("  No strong buy signals found today")
             
-        print(f"\n📁 Check '{analyzer.signals_folder}' folder for detailed Excel report")
+        print(f"\n📁 Check '{analyzer.signals_folder}' folder for detailed formatted Excel report")
     else:
         print("\n❌ Analysis failed. Check your data files in 'Stock Summary Folder'")
