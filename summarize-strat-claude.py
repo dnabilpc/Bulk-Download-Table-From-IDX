@@ -48,7 +48,7 @@ class EnhancedIDXTradingSignalAnalyzer:
             print(f"Error loading {filename}: {e}")
             return None
     
-    def load_multiple_days(self, days_to_load=5):
+    def load_multiple_days(self, days_to_load=30):  # Increased default for technical indicators
         """Load multiple days of data and combine"""
         excel_files = sorted([f for f in os.listdir(self.data_folder) if f.endswith('.xlsx')])
         
@@ -72,6 +72,130 @@ class EnhancedIDXTradingSignalAnalyzer:
         # Combine all data
         combined_df = pd.concat(all_data, ignore_index=True)
         return combined_df
+    
+    def calculate_swing_prices(self, df_stock, periods=[5, 10, 20]):
+        """Calculate swing high and swing low prices for specified periods"""
+        swing_data = {}
+        
+        if len(df_stock) < max(periods) * 2:  # Need sufficient data
+            for period in periods:
+                swing_data[f'Swing_Price_{period}'] = df_stock['Close'].iloc[-1] if len(df_stock) > 0 else 0
+            return swing_data
+        
+        # Sort by date to ensure proper chronological order
+        df_sorted = df_stock.sort_values('Date').reset_index(drop=True)
+        
+        for period in periods:
+            if len(df_sorted) >= period:
+                # Get recent data for the period
+                recent_data = df_sorted.tail(period)
+                
+                # Calculate swing high and low
+                swing_high = recent_data['High'].max()
+                swing_low = recent_data['Low'].min()
+                
+                # Swing price is typically the midpoint of swing high and low
+                # Or we can use the latest close that represents the swing level
+                current_close = df_sorted['Close'].iloc[-1]
+                
+                # Alternative calculation: Use the more significant swing point
+                if current_close >= (swing_high + swing_low) / 2:
+                    swing_price = swing_high  # Closer to high, use high as resistance
+                else:
+                    swing_price = swing_low   # Closer to low, use low as support
+                
+                swing_data[f'Swing_Price_{period}'] = swing_price
+            else:
+                swing_data[f'Swing_Price_{period}'] = df_sorted['Close'].iloc[-1] if len(df_sorted) > 0 else 0
+        
+        return swing_data
+    
+    def calculate_moving_averages(self, df_stock, periods=[5, 10, 20, 30]):
+        """Calculate Simple Moving Averages for specified periods"""
+        ma_data = {}
+        
+        # Sort by date to ensure proper chronological order
+        df_sorted = df_stock.sort_values('Date').reset_index(drop=True)
+        
+        for period in periods:
+            if len(df_sorted) >= period:
+                # Calculate SMA using the most recent 'period' days
+                recent_closes = df_sorted['Close'].tail(period)
+                ma_value = recent_closes.mean()
+                ma_data[f'MA_{period}'] = round(ma_value, 2)
+            else:
+                # If not enough data, use current close price
+                ma_data[f'MA_{period}'] = df_sorted['Close'].iloc[-1] if len(df_sorted) > 0 else 0
+        
+        return ma_data
+    
+    def calculate_donchian_breakout(self, df_stock, periods=[5, 10, 20, 30]):
+        """Calculate Donchian Breakout Oscillator (DBO) for specified periods"""
+        dbo_data = {}
+        
+        # Sort by date to ensure proper chronological order
+        df_sorted = df_stock.sort_values('Date').reset_index(drop=True)
+        current_close = df_sorted['Close'].iloc[-1] if len(df_sorted) > 0 else 0
+        
+        for period in periods:
+            if len(df_sorted) >= period:
+                # Get the most recent 'period' days
+                recent_data = df_sorted.tail(period)
+                
+                # Donchian Channel: Highest High and Lowest Low over the period
+                highest_high = recent_data['High'].max()
+                lowest_low = recent_data['Low'].min()
+                
+                # DBO Formula: (Close - Lowest Low) / (Highest High - Lowest Low) * 100
+                # This gives us a percentage showing where current price is within the channel
+                if highest_high != lowest_low:
+                    dbo_value = ((current_close - lowest_low) / (highest_high - lowest_low)) * 100
+                    dbo_data[f'DBO_{period}'] = round(dbo_value, 2)
+                else:
+                    dbo_data[f'DBO_{period}'] = 50.0  # Middle value if no range
+            else:
+                # If not enough data, default to middle value
+                dbo_data[f'DBO_{period}'] = 50.0
+        
+        return dbo_data
+    
+    def calculate_technical_indicators(self, historical_data, stock_code):
+        """Calculate all technical indicators for a specific stock"""
+        try:
+            # Get stock-specific historical data
+            stock_data = historical_data[historical_data['StockCode'] == stock_code].copy()
+            
+            if len(stock_data) < 5:  # Need at least 5 days of data
+                return {
+                    'Swing_Price_5': 0, 'Swing_Price_10': 0, 'Swing_Price_20': 0,
+                    'MA_5': 0, 'MA_10': 0, 'MA_20': 0, 'MA_30': 0,
+                    'DBO_5': 50, 'DBO_10': 50, 'DBO_20': 50, 'DBO_30': 50
+                }
+            
+            # Calculate swing prices
+            swing_data = self.calculate_swing_prices(stock_data, [5, 10, 20])
+            
+            # Calculate moving averages
+            ma_data = self.calculate_moving_averages(stock_data, [5, 10, 20, 30])
+            
+            # Calculate Donchian Breakout Oscillator
+            dbo_data = self.calculate_donchian_breakout(stock_data, [5, 10, 20, 30])
+            
+            # Combine all technical indicators
+            technical_indicators = {}
+            technical_indicators.update(swing_data)
+            technical_indicators.update(ma_data)
+            technical_indicators.update(dbo_data)
+            
+            return technical_indicators
+            
+        except Exception as e:
+            print(f"Error calculating technical indicators for {stock_code}: {e}")
+            return {
+                'Swing_Price_5': 0, 'Swing_Price_10': 0, 'Swing_Price_20': 0,
+                'MA_5': 0, 'MA_10': 0, 'MA_20': 0, 'MA_30': 0,
+                'DBO_5': 50, 'DBO_10': 50, 'DBO_20': 50, 'DBO_30': 50
+            }
     
     def calculate_price_position(self, df_historical, current_price, stock_code):
         """Calculate where current price sits relative to recent highs/lows"""
@@ -244,7 +368,7 @@ class EnhancedIDXTradingSignalAnalyzer:
             return {'support': None, 'resistance': None, 'pivot': None}
     
     def analyze_daily_signals(self, df_today, df_historical=None):
-        """Enhanced analyze today's trading data with profit-taking detection"""
+        """Enhanced analyze today's trading data with profit-taking detection and technical indicators"""
         signals = []
         
         for _, stock in df_today.iterrows():
@@ -261,6 +385,18 @@ class EnhancedIDXTradingSignalAnalyzer:
                     'Low': stock['Low'],
                     'Date': stock['Date']
                 }
+                
+                # Calculate technical indicators
+                if df_historical is not None:
+                    technical_indicators = self.calculate_technical_indicators(df_historical, stock['StockCode'])
+                    signal_data.update(technical_indicators)
+                else:
+                    # Default values if no historical data
+                    signal_data.update({
+                        'Swing_Price_5': 0, 'Swing_Price_10': 0, 'Swing_Price_20': 0,
+                        'MA_5': 0, 'MA_10': 0, 'MA_20': 0, 'MA_30': 0,
+                        'DBO_5': 50, 'DBO_10': 50, 'DBO_20': 50, 'DBO_30': 50
+                    })
                 
                 # Calculate daily trading metrics
                 score = 0
@@ -307,7 +443,40 @@ class EnhancedIDXTradingSignalAnalyzer:
                             score -= 1
                             reasons.append(f"Very low volume ({volume_ratio:.1f}x avg)")
                 
-                # 3. Daily Range Analysis (20% weight)
+                # 3. Technical Indicators Analysis (20% weight)
+                if df_historical is not None:
+                    # Moving Average Analysis
+                    current_price = stock['Close']
+                    ma_5 = signal_data.get('MA_5', 0)
+                    ma_10 = signal_data.get('MA_10', 0)
+                    ma_20 = signal_data.get('MA_20', 0)
+                    
+                    if ma_5 > 0 and ma_10 > 0 and ma_20 > 0:
+                        if current_price > ma_5 > ma_10 > ma_20:
+                            score += 2
+                            reasons.append("Strong uptrend (price > MA5 > MA10 > MA20)")
+                        elif current_price > ma_5 > ma_10:
+                            score += 1
+                            reasons.append("Good uptrend (price > MA5 > MA10)")
+                        elif current_price < ma_5 < ma_10 < ma_20:
+                            score -= 2
+                            reasons.append("Strong downtrend (price < MA5 < MA10 < MA20)")
+                        elif current_price < ma_5 < ma_10:
+                            score -= 1
+                            reasons.append("Weak downtrend (price < MA5 < MA10)")
+                    
+                    # DBO Analysis
+                    dbo_5 = signal_data.get('DBO_5', 50)
+                    dbo_10 = signal_data.get('DBO_10', 50)
+                    
+                    if dbo_5 >= 80 and dbo_10 >= 70:
+                        score += 1
+                        reasons.append("Strong momentum (DBO signals)")
+                    elif dbo_5 <= 20 and dbo_10 <= 30:
+                        score -= 1
+                        reasons.append("Weak momentum (DBO signals)")
+                
+                # 4. Daily Range Analysis (10% weight)
                 daily_range = ((stock['High'] - stock['Low']) / stock['Previous'] * 100) if stock['Previous'] > 0 else 0
                 close_position = ((stock['Close'] - stock['Low']) / (stock['High'] - stock['Low'])) if (stock['High'] - stock['Low']) > 0 else 0.5
                 
@@ -326,7 +495,7 @@ class EnhancedIDXTradingSignalAnalyzer:
                         score -= 1
                         reasons.append(f"Moderate volatility, closed weak")
                 
-                # 4. Value Analysis (10% weight)
+                # 5. Value Analysis (10% weight)
                 if stock['Value'] >= 10_000_000_000:  # 10B+ rupiah
                     score += 1
                     reasons.append("High trading value")
@@ -408,7 +577,7 @@ class EnhancedIDXTradingSignalAnalyzer:
                     'Confidence_Score': predictions['confidence'],
                     'Time_Horizon': predictions['time_horizon'],
                     
-                    # 🔥 NEW: Enhanced metrics
+                    # Enhanced metrics
                     'Price_Position_Pct': profit_taking_analysis['price_position']['position_pct'],
                     'Profit_Taking_Risk': profit_taking_analysis['profit_taking_risk_score'],
                     'Position_Risk_Level': profit_taking_analysis['price_position']['risk_level'],
@@ -581,7 +750,7 @@ class EnhancedIDXTradingSignalAnalyzer:
         return predictions
     
     def save_formatted_excel(self, signals_df, output_file):
-        """Save DataFrame to Excel with enhanced formatting including profit-taking metrics"""
+        """Save DataFrame to Excel with enhanced formatting including technical indicators"""
         try:
             # Create a workbook and worksheet
             workbook = xlsxwriter.Workbook(output_file)
@@ -690,44 +859,48 @@ class EnhancedIDXTradingSignalAnalyzer:
                     'align': 'center',
                     'border': 1
                 }),
-                # Profit-taking risk formats
-                'pt_risk_low': workbook.add_format({
-                    'bg_color': '#E6F3E6',
-                    'font_color': 'black',
-                    'align': 'center',
-                    'border': 1
+                # Technical indicator formats
+                'swing_above': workbook.add_format({
+                    'num_format': '"Rp"#,##0',
+                    'align': 'right',
+                    'border': 1,
+                    'bg_color': '#E6F7E6',  # Light green for price above swing
+                    'font_color': 'black'
                 }),
-                'pt_risk_medium': workbook.add_format({
-                    'bg_color': '#FFF5CC',
-                    'font_color': 'black',
-                    'align': 'center',
-                    'border': 1
+                'swing_below': workbook.add_format({
+                    'num_format': '"Rp"#,##0',
+                    'align': 'right',
+                    'border': 1,
+                    'bg_color': '#FFE6E6',  # Light red for price below swing
+                    'font_color': 'black'
                 }),
-                'pt_risk_high': workbook.add_format({
-                    'bg_color': '#FFE6CC',
-                    'font_color': 'black',
-                    'align': 'center',
-                    'border': 1
+                'ma_bullish': workbook.add_format({
+                    'num_format': '"Rp"#,##0',
+                    'align': 'right',
+                    'border': 1,
+                    'bg_color': '#D5E8D4',  # Green for bullish MA
+                    'font_color': 'black'
                 }),
-                'pt_risk_extreme': workbook.add_format({
-                    'bg_color': '#FF9999',
-                    'font_color': 'black',
-                    'bold': True,
-                    'align': 'center',
-                    'border': 1
+                'ma_bearish': workbook.add_format({
+                    'num_format': '"Rp"#,##0',
+                    'align': 'right',
+                    'border': 1,
+                    'bg_color': '#F8CECC',  # Red for bearish MA
+                    'font_color': 'black'
                 }),
-                # Price position formats
-                'position_low': workbook.add_format({
-                    'bg_color': '#E6F7FF',
-                    'font_color': 'black',
+                'dbo_overbought': workbook.add_format({
+                    'num_format': '0.00',
                     'align': 'center',
-                    'border': 1
+                    'border': 1,
+                    'bg_color': '#FFE6CC',  # Orange for overbought
+                    'font_color': 'black'
                 }),
-                'position_high': workbook.add_format({
-                    'bg_color': '#FFE6E6',
-                    'font_color': 'black',
+                'dbo_oversold': workbook.add_format({
+                    'num_format': '0.00',
                     'align': 'center',
-                    'border': 1
+                    'border': 1,
+                    'bg_color': '#E6F3FF',  # Light blue for oversold
+                    'font_color': 'black'
                 }),
                 'positive_percentage': workbook.add_format({
                     'num_format': '0.00%',
@@ -749,7 +922,7 @@ class EnhancedIDXTradingSignalAnalyzer:
                 })
             }
             
-            # Enhanced column definitions with new metrics
+            # Enhanced column definitions with technical indicators
             columns = [
                 ('StockCode', 'Stock Code', 12, 'center_text'),
                 ('StockName', 'Stock Name', 20, 'text'),
@@ -759,6 +932,25 @@ class EnhancedIDXTradingSignalAnalyzer:
                 ('Close', 'Close Price', 12, 'currency'),
                 ('Change', 'Change', 10, 'currency'),
                 ('Change_Pct', 'Change %', 10, 'percentage'),
+                
+                # Technical Indicators - Swing Prices
+                ('Swing_Price_5', 'Swing 5D', 12, 'swing_price'),
+                ('Swing_Price_10', 'Swing 10D', 12, 'swing_price'),
+                ('Swing_Price_20', 'Swing 20D', 12, 'swing_price'),
+                
+                # Technical Indicators - Moving Averages
+                ('MA_5', 'MA 5', 10, 'ma'),
+                ('MA_10', 'MA 10', 10, 'ma'),
+                ('MA_20', 'MA 20', 10, 'ma'),
+                ('MA_30', 'MA 30', 10, 'ma'),
+                
+                # Technical Indicators - DBO
+                ('DBO_5', 'DBO 5', 8, 'dbo'),
+                ('DBO_10', 'DBO 10', 8, 'dbo'),
+                ('DBO_20', 'DBO 20', 8, 'dbo'),
+                ('DBO_30', 'DBO 30', 8, 'dbo'),
+                
+                # Existing columns
                 ('Price_Position_Pct', 'Price Position %', 14, 'price_position'),
                 ('Profit_Taking_Risk', 'PT Risk Score', 12, 'pt_risk'),
                 ('Predicted_Gain_Pct', 'Predicted Gain %', 14, 'percentage'),
@@ -785,6 +977,7 @@ class EnhancedIDXTradingSignalAnalyzer:
             for row_idx, (_, row_data) in enumerate(signals_df.iterrows(), start=1):
                 for col_idx, (col_name, header_text, width, format_type) in enumerate(columns):
                     value = row_data.get(col_name, 0)
+                    current_price = row_data.get('Close', 0)
                     
                     # Handle special formatting for Signal column
                     if col_name == 'Signal':
@@ -798,6 +991,33 @@ class EnhancedIDXTradingSignalAnalyzer:
                             worksheet.write(row_idx, col_idx, value, formats['sell'])
                         elif value == 'STRONG SELL':
                             worksheet.write(row_idx, col_idx, value, formats['strong_sell'])
+                    
+                    # Handle Swing Price formatting (compare with current price)
+                    elif col_name.startswith('Swing_Price_'):
+                        if value == 0:
+                            worksheet.write(row_idx, col_idx, 'N/A', formats['center_text'])
+                        elif current_price > value:
+                            worksheet.write(row_idx, col_idx, value, formats['swing_above'])
+                        else:
+                            worksheet.write(row_idx, col_idx, value, formats['swing_below'])
+                    
+                    # Handle Moving Average formatting (compare with current price)
+                    elif col_name.startswith('MA_'):
+                        if value == 0:
+                            worksheet.write(row_idx, col_idx, 'N/A', formats['center_text'])
+                        elif current_price > value:
+                            worksheet.write(row_idx, col_idx, value, formats['ma_bullish'])
+                        else:
+                            worksheet.write(row_idx, col_idx, value, formats['ma_bearish'])
+                    
+                    # Handle DBO formatting (overbought/oversold levels)
+                    elif col_name.startswith('DBO_'):
+                        if value >= 80:
+                            worksheet.write(row_idx, col_idx, value, formats['dbo_overbought'])
+                        elif value <= 20:
+                            worksheet.write(row_idx, col_idx, value, formats['dbo_oversold'])
+                        else:
+                            worksheet.write(row_idx, col_idx, value, formats['decimal'])
                     
                     # Handle Risk Level formatting
                     elif col_name == 'Risk_Level':
@@ -813,20 +1033,20 @@ class EnhancedIDXTradingSignalAnalyzer:
                     # Handle Profit-Taking Risk formatting
                     elif col_name == 'Profit_Taking_Risk':
                         if value >= 7:
-                            worksheet.write(row_idx, col_idx, value, formats['pt_risk_extreme'])
+                            worksheet.write(row_idx, col_idx, value, formats['risk_very_high'])
                         elif value >= 5:
-                            worksheet.write(row_idx, col_idx, value, formats['pt_risk_high'])
+                            worksheet.write(row_idx, col_idx, value, formats['risk_high'])
                         elif value >= 3:
-                            worksheet.write(row_idx, col_idx, value, formats['pt_risk_medium'])
+                            worksheet.write(row_idx, col_idx, value, formats['risk_medium'])
                         else:
-                            worksheet.write(row_idx, col_idx, value, formats['pt_risk_low'])
+                            worksheet.write(row_idx, col_idx, value, formats['risk_low'])
                     
                     # Handle Price Position formatting
                     elif col_name == 'Price_Position_Pct':
                         if value >= 85:
-                            worksheet.write(row_idx, col_idx, value / 100, formats['position_high'])
+                            worksheet.write(row_idx, col_idx, value / 100, formats['risk_high'])
                         elif value <= 20:
-                            worksheet.write(row_idx, col_idx, value / 100, formats['position_low'])
+                            worksheet.write(row_idx, col_idx, value / 100, formats['risk_low'])
                         else:
                             worksheet.write(row_idx, col_idx, value / 100, formats['percentage'])
                     
@@ -863,20 +1083,20 @@ class EnhancedIDXTradingSignalAnalyzer:
                             worksheet.write(row_idx, col_idx, value, formats[format_type])
                     
                     else:
-                        worksheet.write(row_idx, col_idx, value, formats[format_type])
+                        worksheet.write(row_idx, col_idx, value, formats.get(format_type, formats['center_text']))
             
             # Add autofilter
             worksheet.autofilter(0, 0, len(signals_df), len(columns) - 1)
             
-            # Freeze the header row
-            worksheet.freeze_panes(1, 0)
+            # Freeze the header row and first few columns for better navigation
+            worksheet.freeze_panes(1, 3)  # Freeze header and first 3 columns
             
             # Add enhanced summary information
             summary_start_row = len(signals_df) + 3
             
             # Main summary header
-            worksheet.merge_range(summary_start_row, 0, summary_start_row, 4, 
-                                'ENHANCED SIGNAL SUMMARY', formats['header'])
+            worksheet.merge_range(summary_start_row, 0, summary_start_row, 6, 
+                                'ENHANCED SIGNAL SUMMARY WITH TECHNICAL ANALYSIS', formats['header'])
             
             # Signal counts
             signal_counts = signals_df['Signal'].value_counts()
@@ -894,30 +1114,47 @@ class EnhancedIDXTradingSignalAnalyzer:
                 worksheet.write(summary_row, 2, f"{percentage:.1f}%", formats['center_text'])
                 summary_row += 1
             
-            # Profit-taking risk summary
+            # Technical Analysis Summary
             summary_row += 2
-            worksheet.merge_range(summary_row, 0, summary_row, 4, 
-                                'PROFIT-TAKING RISK ANALYSIS', formats['header'])
+            worksheet.merge_range(summary_row, 0, summary_row, 6, 
+                                'TECHNICAL ANALYSIS SUMMARY', formats['header'])
             summary_row += 2
             
-            # High risk stocks
-            high_risk_stocks = signals_df[signals_df['Profit_Taking_Risk'] >= 5]
-            very_high_risk = signals_df[signals_df['Profit_Taking_Risk'] >= 7]
-            near_highs = signals_df[signals_df['Price_Position_Pct'] >= 85]
+            # MA Trend Analysis
+            bullish_ma_trend = len(signals_df[
+                (signals_df['Close'] > signals_df['MA_5']) & 
+                (signals_df['MA_5'] > signals_df['MA_10']) & 
+                (signals_df['MA_10'] > signals_df['MA_20'])
+            ])
             
-            worksheet.write(summary_row, 0, 'High PT Risk (≥5)', formats['center_text'])
-            worksheet.write(summary_row, 1, len(high_risk_stocks), formats['number'])
-            worksheet.write(summary_row, 2, f"{len(high_risk_stocks)/len(signals_df)*100:.1f}%", formats['center_text'])
+            bearish_ma_trend = len(signals_df[
+                (signals_df['Close'] < signals_df['MA_5']) & 
+                (signals_df['MA_5'] < signals_df['MA_10']) & 
+                (signals_df['MA_10'] < signals_df['MA_20'])
+            ])
+            
+            # DBO Analysis
+            overbought_stocks = len(signals_df[signals_df['DBO_5'] >= 80])
+            oversold_stocks = len(signals_df[signals_df['DBO_5'] <= 20])
+            
+            worksheet.write(summary_row, 0, 'Strong Uptrend (Price > MA5 > MA10 > MA20)', formats['center_text'])
+            worksheet.write(summary_row, 1, bullish_ma_trend, formats['number'])
+            worksheet.write(summary_row, 2, f"{bullish_ma_trend/len(signals_df)*100:.1f}%", formats['center_text'])
             summary_row += 1
             
-            worksheet.write(summary_row, 0, 'Very High PT Risk (≥7)', formats['center_text'])
-            worksheet.write(summary_row, 1, len(very_high_risk), formats['number'])
-            worksheet.write(summary_row, 2, f"{len(very_high_risk)/len(signals_df)*100:.1f}%", formats['center_text'])
+            worksheet.write(summary_row, 0, 'Strong Downtrend (Price < MA5 < MA10 < MA20)', formats['center_text'])
+            worksheet.write(summary_row, 1, bearish_ma_trend, formats['number'])
+            worksheet.write(summary_row, 2, f"{bearish_ma_trend/len(signals_df)*100:.1f}%", formats['center_text'])
             summary_row += 1
             
-            worksheet.write(summary_row, 0, 'Near Recent Highs (≥85%)', formats['center_text'])
-            worksheet.write(summary_row, 1, len(near_highs), formats['number'])
-            worksheet.write(summary_row, 2, f"{len(near_highs)/len(signals_df)*100:.1f}%", formats['center_text'])
+            worksheet.write(summary_row, 0, 'Overbought (DBO5 ≥ 80)', formats['center_text'])
+            worksheet.write(summary_row, 1, overbought_stocks, formats['number'])
+            worksheet.write(summary_row, 2, f"{overbought_stocks/len(signals_df)*100:.1f}%", formats['center_text'])
+            summary_row += 1
+            
+            worksheet.write(summary_row, 0, 'Oversold (DBO5 ≤ 20)', formats['center_text'])
+            worksheet.write(summary_row, 1, oversold_stocks, formats['number'])
+            worksheet.write(summary_row, 2, f"{oversold_stocks/len(signals_df)*100:.1f}%", formats['center_text'])
             
             workbook.close()
             print(f"✅ Enhanced formatted Excel file saved: {output_file}")
@@ -931,12 +1168,12 @@ class EnhancedIDXTradingSignalAnalyzer:
             except Exception as e2:
                 print(f"❌ Fallback export also failed: {e2}")
     
-    def run_analysis(self, days_to_analyze=5):
-        """Run the complete enhanced analysis"""
+    def run_analysis(self, days_to_analyze=30):  # Increased for better technical analysis
+        """Run the complete enhanced analysis with technical indicators"""
         print(f"📊 Loading last {days_to_analyze} days of IDX trading data...")
-        print("🔧 Enhanced version with profit-taking detection active!")
+        print("🔧 Enhanced version with technical indicators active!")
         
-        # Load historical data for comparison
+        # Load historical data for comparison and technical analysis
         historical_data = self.load_multiple_days(days_to_analyze)
         if historical_data is None:
             print("❌ Could not load any data files")
@@ -947,9 +1184,9 @@ class EnhancedIDXTradingSignalAnalyzer:
         today_data = historical_data[historical_data['Date'] == latest_date]
         
         print(f"📈 Analyzing {len(today_data)} stocks from {latest_date.strftime('%Y-%m-%d')}")
-        print("🔍 Running enhanced analysis with profit-taking detection...")
+        print("🔍 Running enhanced analysis with technical indicators...")
         
-        # Generate enhanced signals
+        # Generate enhanced signals with technical indicators
         signals_df = self.analyze_daily_signals(today_data, historical_data)
         
         if signals_df.empty:
@@ -963,48 +1200,78 @@ class EnhancedIDXTradingSignalAnalyzer:
         
         # Save enhanced results
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = os.path.join(self.signals_folder, f"enhanced_idx_signals_{timestamp}.xlsx")
+        output_file = os.path.join(self.signals_folder, f"technical_analysis_signals_{timestamp}.xlsx")
         
         # Save with enhanced formatting
         self.save_formatted_excel(signals_df, output_file)
         
-        # Display enhanced results
-        print("\n" + "="*140)
-        print(f"🔥 ENHANCED IDX TRADING SIGNALS - {latest_date.strftime('%Y-%m-%d')}")
-        print("="*140)
+        # Display enhanced results with technical analysis
+        print("\n" + "="*160)
+        print(f"🔥 ENHANCED IDX TRADING SIGNALS WITH TECHNICAL ANALYSIS - {latest_date.strftime('%Y-%m-%d')}")
+        print("="*160)
         
-        # Show profit-taking warnings first
+        # Show technical analysis summary first
+        print(f"\n📊 Technical Analysis Overview:")
+        bullish_trend = len(signals_df[
+            (signals_df['Close'] > signals_df['MA_5']) & 
+            (signals_df['MA_5'] > signals_df['MA_10'])
+        ])
+        bearish_trend = len(signals_df[
+            (signals_df['Close'] < signals_df['MA_5']) & 
+            (signals_df['MA_5'] < signals_df['MA_10'])
+        ])
+        overbought = len(signals_df[signals_df['DBO_5'] >= 80])
+        oversold = len(signals_df[signals_df['DBO_5'] <= 20])
+        
+        print(f"   Bullish MA Trend: {bullish_trend} stocks ({bullish_trend/len(signals_df)*100:.1f}%)")
+        print(f"   Bearish MA Trend: {bearish_trend} stocks ({bearish_trend/len(signals_df)*100:.1f}%)")
+        print(f"   Overbought (DBO ≥80): {overbought} stocks ({overbought/len(signals_df)*100:.1f}%)")
+        print(f"   Oversold (DBO ≤20): {oversold} stocks ({oversold/len(signals_df)*100:.1f}%)")
+        
+        # Show profit-taking warnings
         high_risk_stocks = signals_df[signals_df['Profit_Taking_Risk'] >= 5]
         if len(high_risk_stocks) > 0:
             print(f"\n⚠️  HIGH PROFIT-TAKING RISK DETECTED ({len(high_risk_stocks)} stocks):")
-            for _, stock in high_risk_stocks.head(10).iterrows():
+            for _, stock in high_risk_stocks.head(5).iterrows():
                 warnings_preview = stock['Warnings'][:60] + "..." if len(str(stock['Warnings'])) > 60 else stock['Warnings']
                 print(f"  🚨 {stock['StockCode']} (Risk: {stock['Profit_Taking_Risk']}/10, "
                       f"Position: {stock['Price_Position_Pct']:.1f}%): {warnings_preview}")
         
-        # Show signals with enhanced metrics
+        # Show signals with enhanced metrics including technical indicators
         for signal_type in signal_order:
             stocks = signals_df[signals_df['Signal'] == signal_type]
             if len(stocks) > 0:
                 print(f"\n🔸 {signal_type} ({len(stocks)} stocks):")
-                for _, stock in stocks.head(10).iterrows():
+                for _, stock in stocks.head(8).iterrows():
                     predicted_gain = stock.get('Predicted_Gain_Pct', 0)
                     target_price = stock.get('Target_Price', stock['Close'])
                     confidence = stock.get('Confidence_Score', 0)
                     risk = stock.get('Risk_Level', 'N/A')
                     pt_risk = stock.get('Profit_Taking_Risk', 0)
                     price_pos = stock.get('Price_Position_Pct', 50)
-                    original_score = stock.get('Original_Score', 0)
-                    adjusted_score = stock.get('Adjusted_Score', 0)
                     
-                    # Add risk indicators
+                    # Technical indicators
+                    ma_5 = stock.get('MA_5', 0)
+                    ma_10 = stock.get('MA_10', 0)
+                    dbo_5 = stock.get('DBO_5', 50)
+                    
+                    # Add risk and technical indicators
                     risk_indicators = []
                     if pt_risk >= 5:
                         risk_indicators.append(f"⚠️PT:{pt_risk}")
                     if price_pos >= 85:
                         risk_indicators.append(f"📊{price_pos:.0f}%")
-                    if original_score != adjusted_score:
-                        risk_indicators.append(f"📉{original_score:.1f}→{adjusted_score:.1f}")
+                    if dbo_5 >= 80:
+                        risk_indicators.append(f"🔴DBO:{dbo_5:.0f}")
+                    elif dbo_5 <= 20:
+                        risk_indicators.append(f"🔵DBO:{dbo_5:.0f}")
+                    
+                    # MA trend indicator
+                    if ma_5 > 0 and ma_10 > 0:
+                        if stock['Close'] > ma_5 > ma_10:
+                            risk_indicators.append("📈MA↗")
+                        elif stock['Close'] < ma_5 < ma_10:
+                            risk_indicators.append("📉MA↘")
                     
                     risk_text = f" [{', '.join(risk_indicators)}]" if risk_indicators else ""
                     
@@ -1012,10 +1279,10 @@ class EnhancedIDXTradingSignalAnalyzer:
                           f"Current: Rp{stock['Close']:,.0f}, Target: Rp{target_price:,.0f} "
                           f"({predicted_gain:+.1f}%), Risk: {risk}, Confidence: {confidence}%{risk_text}")
                 
-                if len(stocks) > 10:
-                    print(f"    ... and {len(stocks) - 10} more")
+                if len(stocks) > 8:
+                    print(f"    ... and {len(stocks) - 8} more")
         
-        # Enhanced summary statistics
+        # Enhanced summary statistics with technical analysis
         print(f"\n📊 Enhanced Summary Statistics:")
         
         # Signal distribution
@@ -1023,6 +1290,24 @@ class EnhancedIDXTradingSignalAnalyzer:
         for signal, count in signal_counts.items():
             percentage = (count / len(signals_df) * 100)
             print(f"   {signal}: {count} stocks ({percentage:.1f}%)")
+        
+        # Technical analysis summary
+        print(f"\n🔧 Technical Analysis Summary:")
+        strong_uptrend = len(signals_df[
+            (signals_df['Close'] > signals_df['MA_5']) & 
+            (signals_df['MA_5'] > signals_df['MA_10']) & 
+            (signals_df['MA_10'] > signals_df['MA_20'])
+        ])
+        strong_downtrend = len(signals_df[
+            (signals_df['Close'] < signals_df['MA_5']) & 
+            (signals_df['MA_5'] < signals_df['MA_10']) & 
+            (signals_df['MA_10'] < signals_df['MA_20'])
+        ])
+        
+        print(f"   Strong Uptrend (Price > MA5 > MA10 > MA20): {strong_uptrend} stocks ({strong_uptrend/len(signals_df)*100:.1f}%)")
+        print(f"   Strong Downtrend (Price < MA5 < MA10 < MA20): {strong_downtrend} stocks ({strong_downtrend/len(signals_df)*100:.1f}%)")
+        print(f"   Overbought Stocks (DBO5 ≥ 80): {overbought} stocks ({overbought/len(signals_df)*100:.1f}%)")
+        print(f"   Oversold Stocks (DBO5 ≤ 20): {oversold} stocks ({oversold/len(signals_df)*100:.1f}%)")
         
         # Risk analysis summary
         print(f"\n🔍 Risk Analysis Summary:")
@@ -1036,13 +1321,13 @@ class EnhancedIDXTradingSignalAnalyzer:
         print(f"   Near Recent Highs (≥85%): {near_highs} stocks ({near_highs/len(signals_df)*100:.1f}%)")
         print(f"   Signals Adjusted for Risk: {score_adjustments} stocks ({score_adjustments/len(signals_df)*100:.1f}%)")
         
-        print(f"\n💾 Enhanced detailed report saved: {output_file}")
-        print("🔥 New features: Profit-taking risk detection, price position analysis, enhanced predictions!")
+        print(f"\n💾 Enhanced detailed report with technical analysis saved: {output_file}")
+        print("🔥 New features: Swing Prices, Moving Averages, Donchian Breakout Oscillator!")
         
         return signals_df
     
     def get_top_picks(self, signals_df, signal_type='BUY', top_n=10, exclude_high_risk=True):
-        """Get top stock picks for a specific signal type with enhanced filtering"""
+        """Get top stock picks for a specific signal type with enhanced filtering including technical analysis"""
         if signals_df is None:
             return None
         
@@ -1053,10 +1338,61 @@ class EnhancedIDXTradingSignalAnalyzer:
             filtered = filtered[filtered['Profit_Taking_Risk'] < 7]  # Exclude very high risk
             print(f"🔍 Filtering out stocks with very high profit-taking risk (≥7)")
         
-        # Sort by adjusted score and confidence
+        # Additional technical filter for buy signals
+        if signal_type == 'BUY':
+            # Prefer stocks with bullish technical setup
+            filtered = filtered[
+                (filtered['Close'] >= filtered['MA_5']) |  # Above short-term MA
+                (filtered['DBO_5'] <= 70)  # Not too overbought
+            ]
+            print(f"📈 Additional technical filter applied for BUY signals")
+        
+        # Sort by adjusted score, confidence, and technical strength
         filtered = filtered.sort_values(['Adjusted_Score', 'Confidence_Score'], ascending=[False, False])
         
         return filtered.head(top_n)
+    
+    def get_technical_analysis_summary(self, signals_df):
+        """Get detailed technical analysis summary"""
+        if signals_df is None:
+            return None
+        
+        summary = {
+            'total_stocks': len(signals_df),
+            
+            # Moving Average Analysis
+            'strong_uptrend': len(signals_df[
+                (signals_df['Close'] > signals_df['MA_5']) & 
+                (signals_df['MA_5'] > signals_df['MA_10']) & 
+                (signals_df['MA_10'] > signals_df['MA_20'])
+            ]),
+            'strong_downtrend': len(signals_df[
+                (signals_df['Close'] < signals_df['MA_5']) & 
+                (signals_df['MA_5'] < signals_df['MA_10']) & 
+                (signals_df['MA_10'] < signals_df['MA_20'])
+            ]),
+            'above_ma5': len(signals_df[signals_df['Close'] > signals_df['MA_5']]),
+            'below_ma5': len(signals_df[signals_df['Close'] < signals_df['MA_5']]),
+            
+            # DBO Analysis
+            'overbought': len(signals_df[signals_df['DBO_5'] >= 80]),
+            'oversold': len(signals_df[signals_df['DBO_5'] <= 20]),
+            'neutral_momentum': len(signals_df[
+                (signals_df['DBO_5'] > 20) & (signals_df['DBO_5'] < 80)
+            ]),
+            
+            # Swing Price Analysis
+            'above_swing5': len(signals_df[signals_df['Close'] > signals_df['Swing_Price_5']]),
+            'above_swing10': len(signals_df[signals_df['Close'] > signals_df['Swing_Price_10']]),
+            'above_swing20': len(signals_df[signals_df['Close'] > signals_df['Swing_Price_20']]),
+            
+            # Average values
+            'avg_dbo5': signals_df['DBO_5'].mean(),
+            'avg_dbo10': signals_df['DBO_10'].mean(),
+            'avg_price_above_ma5_pct': (signals_df['Close'] / signals_df['MA_5'] * 100 - 100).mean()
+        }
+        
+        return summary
     
     def get_risk_analysis_summary(self, signals_df):
         """Get detailed risk analysis summary"""
@@ -1077,8 +1413,9 @@ class EnhancedIDXTradingSignalAnalyzer:
 
 if __name__ == "__main__":
     print("🚀 Enhanced IDX Daily Trading Signal Analyzer")
-    print("🔥 NOW WITH PROFIT-TAKING DETECTION!")
-    print("="*60)
+    print("🔥 NOW WITH TECHNICAL INDICATORS!")
+    print("📊 Features: Swing Prices, Moving Averages, Donchian Breakout Oscillator")
+    print("="*80)
     
     # Check if xlsxwriter is available
     try:
@@ -1092,17 +1429,18 @@ if __name__ == "__main__":
     
     # Ask user for number of days to analyze
     try:
-        days = int(input("How many days of data to analyze for comparison? (default 5): ") or "5")
+        days = int(input("How many days of data to analyze for technical indicators? (default 30, min 20): ") or "30")
+        days = max(days, 20)  # Minimum 20 days for proper technical analysis
     except ValueError:
-        days = 5
+        days = 30
     
     results = analyzer.run_analysis(days_to_analyze=days)
     
     if results is not None:
-        print(f"\n✅ Enhanced analysis complete! Analyzed {len(results)} stocks.")
+        print(f"\n✅ Enhanced analysis complete! Analyzed {len(results)} stocks with technical indicators.")
         
-        # Show enhanced top picks with risk filtering
-        print("\n🏆 TOP BUY RECOMMENDATIONS (Low Profit-Taking Risk):")
+        # Show enhanced top picks with technical analysis
+        print("\n🏆 TOP BUY RECOMMENDATIONS (Technical + Risk Analysis):")
         top_buys = analyzer.get_top_picks(results, 'BUY', 5, exclude_high_risk=True)
         if top_buys is not None and len(top_buys) > 0:
             for _, stock in top_buys.iterrows():
@@ -1114,24 +1452,60 @@ if __name__ == "__main__":
                 pt_risk = stock.get('Profit_Taking_Risk', 0)
                 price_pos = stock.get('Price_Position_Pct', 50)
                 
+                # Technical indicators
+                ma_5 = stock.get('MA_5', 0)
+                ma_10 = stock.get('MA_10', 0)
+                dbo_5 = stock.get('DBO_5', 50)
+                swing_5 = stock.get('Swing_Price_5', 0)
+                
                 print(f"  🔥 {stock['StockCode']} - Current: Rp{stock['Close']:,.0f}, "
                       f"Target: Rp{target_price:,.0f} ({predicted_gain:+.1f}%)")
                 print(f"     Risk: {risk}, Confidence: {confidence}%, Timeframe: {time_frame}")
                 print(f"     PT Risk: {pt_risk}/10, Price Position: {price_pos:.1f}%")
+                
+                # Technical summary
+                ma_trend = "↗" if stock['Close'] > ma_5 > ma_10 else "↘" if stock['Close'] < ma_5 < ma_10 else "→"
+                dbo_status = "Overbought" if dbo_5 >= 80 else "Oversold" if dbo_5 <= 20 else "Neutral"
+                swing_status = "Above" if stock['Close'] > swing_5 else "Below"
+                
+                print(f"     Technical: MA Trend {ma_trend}, DBO: {dbo_5:.1f} ({dbo_status}), "
+                      f"vs Swing5D: {swing_status}")
+                print()
         else:
-            print("  No low-risk buy signals found today")
+            print("  No suitable buy signals found today")
+        
+        # Show technical analysis summary
+        tech_summary = analyzer.get_technical_analysis_summary(results)
+        if tech_summary:
+            print(f"\n📊 Technical Analysis Summary:")
+            print(f"   Strong Uptrend: {tech_summary['strong_uptrend']} stocks "
+                  f"({tech_summary['strong_uptrend']/tech_summary['total_stocks']*100:.1f}%)")
+            print(f"   Strong Downtrend: {tech_summary['strong_downtrend']} stocks "
+                  f"({tech_summary['strong_downtrend']/tech_summary['total_stocks']*100:.1f}%)")
+            print(f"   Above MA5: {tech_summary['above_ma5']} stocks "
+                  f"({tech_summary['above_ma5']/tech_summary['total_stocks']*100:.1f}%)")
+            print(f"   Overbought (DBO ≥80): {tech_summary['overbought']} stocks "
+                  f"({tech_summary['overbought']/tech_summary['total_stocks']*100:.1f}%)")
+            print(f"   Oversold (DBO ≤20): {tech_summary['oversold']} stocks "
+                  f"({tech_summary['oversold']/tech_summary['total_stocks']*100:.1f}%)")
+            print(f"   Average DBO5: {tech_summary['avg_dbo5']:.1f}")
+            print(f"   Average price vs MA5: {tech_summary['avg_price_above_ma5_pct']:+.1f}%")
         
         # Show risk analysis summary
         risk_summary = analyzer.get_risk_analysis_summary(results)
         if risk_summary:
-            print(f"\n📊 Risk Analysis Summary:")
-            print(f"   Total stocks analyzed: {risk_summary['total_stocks']}")
+            print(f"\n🔍 Risk Analysis Summary:")
             print(f"   High profit-taking risk: {risk_summary['high_pt_risk']} "
                   f"({risk_summary['high_pt_risk']/risk_summary['total_stocks']*100:.1f}%)")
             print(f"   Average profit-taking risk: {risk_summary['avg_pt_risk']:.1f}/10")
             print(f"   Average price position: {risk_summary['avg_price_position']:.1f}%")
             
         print(f"\n📁 Check '{analyzer.signals_folder}' folder for enhanced Excel report")
-        print("🔥 New Excel features: Color-coded profit-taking risk, price position analysis, enhanced warnings!")
+        print("🔥 Excel includes: Color-coded technical indicators, trend analysis, risk metrics!")
+        print("📊 Column Legend:")
+        print("   • Swing Prices: Green=Price Above, Red=Price Below")
+        print("   • Moving Averages: Green=Bullish, Red=Bearish")
+        print("   • DBO: Orange=Overbought (≥80), Blue=Oversold (≤20)")
     else:
         print("\n❌ Analysis failed. Check your data files in 'Stock Summary Folder'")
+        print("💡 Ensure you have at least 20 days of data for proper technical analysis")
